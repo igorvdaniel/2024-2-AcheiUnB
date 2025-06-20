@@ -1,0 +1,102 @@
+from django.test import TestCase
+from unittest.mock import patch, Mock
+from datetime import datetime
+
+from users.views import save_or_update_user, User 
+
+class SaveOrUpdateUserTest(TestCase):
+    
+    def setUp(self):
+        """Configura dados comuns para todos os testes."""
+        self.valid_user_data = {
+            "userPrincipalName": "test.user@example.com",
+            "givenName": "Test",
+            "surname": "User",
+        }
+
+    @patch('users.views.User.objects.update_or_create')
+    def test_CT1_erro_na_criacao_do_usuario(self, mock_update_or_create):
+        """
+        CT1: Testa o caminho de falha quando o banco de dados não consegue
+        salvar ou atualizar o usuário.
+        """
+        
+        mock_update_or_create.side_effect = Exception("Erro de Banco de Dados")
+
+       
+        with self.assertRaises(Exception) as context:
+            save_or_update_user(self.valid_user_data, access_token=None)
+        
+        self.assertIn("Erro ao salvar ou atualizar o usuário", str(context.exception))
+        self.assertIn("Erro de Banco de Dados", str(context.exception))
+
+    @patch('users.views.upload_images_to_cloudinary.delay')
+    @patch('users.views.get_user_photo')
+    @patch('users.views.User.objects.update_or_create')
+    def test_CT2_sucesso_na_criacao_com_foto(self, mock_update_or_create, mock_get_photo, mock_upload):
+        """
+        CT2: Testa o caminho de sucesso completo, onde o usuário é salvo
+        e a foto é encontrada e enviada para a nuvem.
+        """
+        
+        mock_user = Mock()
+        mock_user.id = 123
+        mock_update_or_create.return_value = (mock_user, True)
+        mock_get_photo.return_value = "blob_de_dados_da_foto"
+        
+        
+        user, created = save_or_update_user(self.valid_user_data, access_token="token_valido")
+        
+        
+        self.assertTrue(created)
+        self.assertEqual(user.id, 123)
+        mock_update_or_create.assert_called_once()
+        mock_get_photo.assert_called_once_with("token_valido")
+        mock_upload.assert_called_once_with(123, ["blob_de_dados_da_foto"], object_type="user")
+
+    @patch('users.views.logger')
+    @patch('users.views.upload_images_to_cloudinary.delay')
+    @patch('users.views.get_user_photo')
+    @patch('users.views.User.objects.update_or_create')
+    def test_CT3_falha_na_busca_de_foto(self, mock_update_or_create, mock_get_photo, mock_upload, mock_logger):
+        """
+        CT3: Testa o cenário onde o usuário é salvo, mas a busca pela foto
+        falha (lança uma exceção).
+        """
+      
+        mock_user = Mock(id=123)
+        mock_update_or_create.return_value = (mock_user, False)
+        mock_get_photo.side_effect = Exception("API fora do ar")
+        
+       
+        user, created = save_or_update_user(self.valid_user_data, access_token="token_valido_mas_api_falha")
+        
+        
+        self.assertFalse(created)
+        self.assertEqual(user.id, 123)
+        mock_update_or_create.assert_called_once()
+        mock_get_photo.assert_called_once()
+        mock_logger.error.assert_called_once_with("Erro ao buscar a foto do usuário: API fora do ar")
+        mock_upload.assert_not_called()
+
+    @patch('users.views.upload_images_to_cloudinary.delay')
+    @patch('users.views.get_user_photo')
+    @patch('users.views.User.objects.update_or_create')
+    def test_CT4_sem_token_de_acesso(self, mock_update_or_create, mock_get_photo, mock_upload):
+        """
+        CT4: Testa o cenário onde o usuário é salvo com sucesso, mas nenhum
+        token de acesso é fornecido.
+        """
+        
+        mock_user = Mock(id=123)
+        mock_update_or_create.return_value = (mock_user, True)
+        
+        
+        user, created = save_or_update_user(self.valid_user_data, access_token=None)
+        
+        
+        self.assertTrue(created)
+        self.assertEqual(user.id, 123)
+        mock_update_or_create.assert_called_once()
+        mock_get_photo.assert_not_called()
+        mock_upload.assert_not_called()
